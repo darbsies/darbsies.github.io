@@ -1,0 +1,417 @@
+<html>
+  <style>
+
+    .active {
+      stroke: #000;
+      stroke-width: 3px;
+    }
+
+
+    text {
+      font-family: sans-serif;
+    }
+
+    #visualization_area {
+      width: 750px;
+      padding: 0;
+      margin: 0;
+      display: block;
+      position: fixed;
+      font: 12px sans-serif;
+    }
+
+    #right_column {
+      width: 500px;
+      padding-top: 50px;
+      padding-bottom: 191px;
+      background-color: #d3d3d3;
+      display: block;
+      float: right;
+      font: 20px sans-serif;
+      text-align: left;
+    }
+
+  </style>
+
+<div id="right_column">
+  <p>
+    <label for="introText1"
+           style="display: inline-block; width: 350px; text-align: left; padding-left: 40; padding-bottom: 7;">
+           Here you can interact with a map of San Francisco showing restaurants and their health scores.
+    </label>
+  </p>
+  <p>
+    <label for="introText2"
+           style="display: inline-block; width: 350px; text-align: left; padding-left: 40; padding-bottom: 7;">
+           Click anywhere inside the blue or red circles to move their positions on the map. You can change the radius of the circles too.
+    </label>
+  </p>
+  <p>
+    <label for="introText3"
+           style="display: inline-block; width: 350px; text-align: left; padding-left: 40; padding-bottom: 40;">
+           Restaurants in the intersection of the two circles will appear, and click on them for more information, and click again to close the info box.
+    </label>
+  </p>
+  <p>
+    <label for="nRadiusA"
+           style="display: inline-block; width: 250px; text-align: left; padding-left: 40;">
+           Red Radius = <span id="nRadiusA-value">…</span> miles
+    </label>
+    <input type="range" min="1" max="150" id="nRadiusA">
+  </p>
+
+  <p>
+    <label for="nRadiusB"
+           style="display: inline-block; width: 250px; text-align: left; padding-left: 40;">
+           Blue Radius = <span id="nRadiusB-value">…</span> miles
+    </label>
+    <input type="range" min="1" max="150" id="nRadiusB">
+  </p>
+
+  <p>
+    <label for="lowestScore"
+           style="display: inline-block; width: 250px; text-align: left; padding-left: 40;">
+           Lowest Health Score = <span id="lowestScore-value">…</span>
+    </label>
+    <input type="range" min="0" max="100" id="lowestScore">
+  </p>
+
+</div>
+
+<head>
+    <script src="http://d3js.org/d3.v5.min.js"></script>
+</head>
+  <body>
+    <div id="visualization_area">
+      <script
+        type="text/javascript">
+
+
+        // Set up size
+        var mapWidth = 750;
+        var mapHeight = 750;
+        var lowestHealthScore = 0;
+        var healthdata;
+        var rest_circles;
+        var circles_added = false;
+        var just_loaded = -1;
+        format_two_decimal = d3.format(",.2f");
+
+        //Read CSV and parse dates
+
+        d3.csv("/data/restaurant_scores.csv", parseInputRow).then(loadData);
+
+        function parseInputRow(d) {
+          return {
+            business_id: +d.business_id,
+            business_name: d.business_name,
+            business_address: d.business_address,
+            business_postal_code: +d.business_postal_code,
+            business_latitude: +d.business_latitude,
+            business_longitude: +d.business_longitude,
+            business_location: d.business_location,
+            business_phone_number: +d.business_phone_number,
+            inspection_id: d.inspection_id,
+            inspection_date: d.inspection_date,
+            inspection_score: +d.inspection_score,
+            violation_id: d.violation_id,
+            violation_description: d.violation_description,
+            risk_category: d.risk_category,
+            bullshitfield: 7
+          };
+        }
+
+        function loadData(d) {
+          healthdata = d;
+          just_loaded = 0;
+        }
+
+        // Set up projection that the map is using
+        var projection = d3.geoMercator()
+          .center([-122.433701, 37.767683]) // San Francisco, roughly
+          .scale(225000)
+          .translate([mapWidth / 2, mapHeight / 2]);
+
+        // This is the mapping between <longitude, latitude> position to <x, y> pixel position on the map
+        // projection is a function and it has an inverse:
+        // projection([lon, lat]) returns [x, y]
+        // projection.invert([x, y]) returns [lon, lat]
+
+        // Add an SVG element to the DOM
+        var svg = d3.select('body').append('svg')
+          .attr('width', mapWidth)
+          .attr('height', mapHeight);
+
+        // Add SVG map at correct size, assuming map is saved in a subdirectory called `data`
+        svg.append('image')
+          .attr('width', mapWidth)
+          .attr('height', mapHeight)
+          .attr('xlink:href', 'data/sf-map.svg');
+
+        var business_longitude = -122.466344;
+        var business_latitude = 37.763448;
+
+        var projectedLocation = projection([business_longitude, business_latitude]);
+
+        var circle_A = svg.append('circle')
+          .attr('cx', projectedLocation[0])
+          .attr('cy', projectedLocation[1])
+          .attr('r', 1.5)
+          .attr("fill-opacity","0.04")
+          .style("fill","red")
+          .style("stroke", "red")
+          .attr('id', "circle_A")
+          .call(d3.drag()
+          .on("start", dragstarted)
+          .on("drag", dragged)
+          .on("end", dragended));
+
+
+        // draw the circle
+        var circle_B = svg.append("circle")
+          .attr("cx", 300)
+          .attr("cy", 150)
+          .attr("fill-opacity","0.04")
+          .style("fill","blue")
+          .style("stroke", "blue")
+          .attr("r", 120)
+          .attr('id', "circle_B")
+          .call(d3.drag()
+          .on("start", dragstarted)
+          .on("drag", dragged)
+          .on("end", dragended));
+
+
+        function radius_to_miles(rad_px) {
+          var lower_left_proj = projection.invert([0, mapHeight]);
+          var upper_right_proj = projection.invert([mapWidth, 0]);
+          var radians = d3.geoDistance(lower_left_proj, upper_right_proj);
+          var earth_radius = 3959;  // miles
+          var arc_length = earth_radius * radians;  // s = r * theta
+
+          var projected_map_bounds = [
+            projection(lower_left_proj),
+            projection(upper_right_proj)
+          ];
+
+          var projected_map_width = projected_map_bounds[1][0] - projected_map_bounds[0][0];
+          var projected_map_height = projected_map_bounds[0][1] - projected_map_bounds[1][1];
+          var projected_map_hypotenuse = Math.sqrt(
+            (Math.pow(projected_map_width, 2)) + (Math.pow(projected_map_height, 2))
+          );
+
+          var pixels_per_mile = projected_map_hypotenuse / arc_length;
+          var miles = (1 / pixels_per_mile) * rad_px;
+
+          return miles;
+
+
+          // var diff_proj = [upper_right_proj[0] - lower_left_proj[0], upper_right_proj[1] - lower_left_proj[1]];
+          // console.log(diff_proj);
+          // var lower_left = [-122.433701 - mapWidth / 2, 37.767683 - mapHeight / 2];
+          // var upper_right = [-122.433701 + mapWidth / 2, 37.767683 + mapHeight / 2];
+          // console.log(lower_left);
+          // console.log(upper_right);
+        }
+
+
+        // when the input range changes update the circle
+        d3.select("#nRadiusA").on("input", function() {
+          update_A(+this.value);
+        });
+
+        // Initial starting radius of the circle
+        update_A(120);
+
+        // update radius A
+        function update_A(nRadius) {
+          if (just_loaded != -1) {
+            addRestaurants(lowestHealthScore);
+          };
+          // adjust the text on the range slider
+          d3.select("#nRadiusA-value").text(function() { return format_two_decimal(radius_to_miles(nRadius)); });
+          d3.select("#nRadiusA").property("value", nRadius);
+
+          // update the circle radius
+          svg.select("#circle_A")
+            .attr("r", nRadius);
+        }
+
+        // when the input range changes update the circle
+        d3.select("#nRadiusB").on("input", function() {
+          update_B(+this.value);
+        });
+
+        // Initial starting radius of the circle
+        update_B(120);
+
+        // update radius B
+        function update_B(nRadius) {
+          if (just_loaded != -1) {
+            addRestaurants(lowestHealthScore);
+          };
+          // adjust the text on the range slider
+          d3.select("#nRadiusB-value").text(function() { return format_two_decimal(radius_to_miles(nRadius)); });
+          d3.select("#nRadiusB").property("value", nRadius);
+          // update the circle radius
+          svg.select("#circle_B")
+            .attr("r", nRadius);
+        }
+
+        //Update Health Score Var from Selector
+        d3.select("#lowestScore").on("input", function() {
+          update_hs(+this.value);
+        });
+
+        // Initial starting health score
+        update_hs(0);
+
+        // update health score var
+        function update_hs(score) {
+          lowestHealthScore = score;
+          if (just_loaded != -1) {
+            addRestaurants(lowestHealthScore);
+          };
+          // adjust the text on the range slider
+          d3.select("#lowestScore-value").text(score);
+          d3.select("#lowestScore").property("value", score);
+        }
+
+        //DRAG STUFF
+        function dragstarted(d) {
+          d3.select(this).raise().classed("active", true);
+        }
+
+        function dragged(d) {
+          d3.select(this).attr("cx", d3.event.x).attr("cy", d3.event.y);
+          addRestaurants(lowestHealthScore);
+        }
+
+        function dragended(d) {
+          d3.select(this).classed("active", false);
+          addRestaurants(lowestHealthScore);
+        }
+
+        function inCircleA(index) {
+          radius = d3.select("#circle_A").attr("r")
+          center_x = d3.select("#circle_A").attr("cx")
+          center_y = d3.select("#circle_A").attr("cy")
+          rest = healthdata[index]
+          lat_rest = rest.business_latitude
+          long_rest = rest.business_longitude
+          x_y_rest = projection([long_rest, lat_rest])
+          return Math.pow((x_y_rest[0] - center_x), 2) + Math.pow((x_y_rest[1] - center_y), 2) < Math.pow(radius, 2);
+        }
+
+        function inCircleB(index) {
+          radius = d3.select("#circle_B").attr("r")
+          center_x = d3.select("#circle_B").attr("cx")
+          center_y = d3.select("#circle_B").attr("cy")
+          rest = healthdata[index]
+          lat_rest = rest.business_latitude
+          long_rest = rest.business_longitude
+          x_y_rest = projection([long_rest, lat_rest])
+          return Math.pow((x_y_rest[0] - center_x), 2) + Math.pow((x_y_rest[1] - center_y), 2) < Math.pow(radius, 2);
+        }
+
+
+        function addCircles() {
+          circles_added = true;
+          num = healthdata.length;
+          rest_circles = d3.range(num).map(function (i) {
+            var restaurant = healthdata[i]
+            var restLocation = projection([restaurant.business_longitude, restaurant.business_latitude])
+            return {
+                x: restLocation[0],
+                y: restLocation[1],
+                name: restaurant.business_name,
+                ind: i,
+                score: restaurant.inspection_score
+            };
+          })
+        }
+
+        function addRestaurants(score) {
+          removeBox();
+          if(circles_added == false) {
+            addCircles();
+          };
+
+          svg.selectAll("#rest-circles").remove();
+
+          for (i = 0; i < healthdata.length; i++) {
+            if (inCircleA(i) && inCircleB(i)) {
+              if (rest_circles[i].score >= score) {
+                var point_data = [rest_circles[i]]
+                var rest_pt = svg.append('circle')
+                  .data(point_data)
+                  .attr("cx", function (d) { return d.x; })
+                  .attr("cy", function (d) { return d.y; })
+                  .attr("r", 2.5)
+                  .style("fill","black")
+                  .attr('id', "rest-circles")
+                  .on("click", infoBox);
+              }
+            }
+          }
+        }
+
+        var rest_box_shown = false;
+        var rest_box_index = -1;
+
+        function infoBox(d) {
+          index = d.ind;
+          if (rest_box_shown && rest_box_index != index) {
+            addNewBox(d);
+          } else if (rest_box_shown == false){
+            addNewBox(d);
+          } else if (rest_box_shown && rest_box_index == index) {
+            removeBox();
+          }
+        }
+
+
+        function addNewBox(d) {
+          d3.select("#rest_box").remove();
+          x_pad = d.x + 2;
+          y_pad = d.y + 2;
+          var info_box = svg.append("g")
+            .attr("transform", "translate(" + x_pad + "," + y_pad + ")")
+            .attr("id", "rest_box");
+
+
+          var rect = info_box.append("rect")
+            .style("fill", "white")
+            .style("stroke", "steelblue");
+
+          info_box.append("text")
+            .text("Name: " + d.name)
+            .attr("dy", "1em")
+            .attr("x", 5);
+
+          info_box.append("text")
+            .text("Health Score: " + d.score)
+            .attr("dy", "2em")
+            .attr("x", 5);
+
+          var bbox = info_box.node().getBBox();
+            rect.attr("width", bbox.width + 10)
+            .attr("height", bbox.height + 10)
+
+          rest_box_shown = true;
+          rest_box_index = d.ind;
+        }
+
+        function removeBox() {
+          d3.select("#rest_box").remove();
+          rest_box_shown = false;
+          rest_box_index = false;
+        }
+
+      </script>
+    </div>
+
+  </body>
+  </html>
+
+
